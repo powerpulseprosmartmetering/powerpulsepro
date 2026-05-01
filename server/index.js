@@ -1,0 +1,215 @@
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const mongoose = require('mongoose');
+const compression = require('compression');
+
+// Load environment variables
+dotenv.config();
+
+// Import routes
+const authRoutes = require('./routes/auth');
+const consumerRoutes = require('./routes/consumer');
+const adminRoutes = require('./routes/admin');
+const meterRoutes = require('./routes/meter');
+const billingRoutes = require('./routes/billing');
+const alertRoutes = require('./routes/alerts');
+const eventRoutes = require('./routes/events');
+const Admin = require('./models/Admin');
+const Event = require('./models/Event');
+
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// Security middleware
+app.use(helmet());
+// Trust proxy (Render and other proxies)
+app.set('trust proxy', 1);
+
+// Compression for responses
+app.use(compression());
+
+// Rate limiting
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 50 : 200,
+  message: 'Too many login attempts from this IP, please try again later.'
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 300 : 2000,
+  message: 'Too many requests from this IP, please try again later.',
+  skip: (req) => req.path.startsWith('/api/auth') || req.path === '/api/health'
+});
+
+app.use(apiLimiter);
+app.use('/api/auth', authLimiter);
+
+// CORS configuration
+const configuredClientUrls = [
+  process.env.CLIENT_URL,
+  ...(process.env.CLIENT_URLS ? process.env.CLIENT_URLS.split(',') : [])
+]
+  .filter(Boolean)
+  .map((url) => url.trim());
+
+const defaultDevOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5174'
+];
+const defaultProdOrigins = [
+  'https://powerpulsepro-api.onrender.com',
+  'https://powerpulseproo-api.onrender.com',
+  'https://powerpulseproo-backend.onrender.com',
+  'https://powerpulseproo.onrender.com',
+  'https://powerpulseproo-1.onrender.com'
+];
+const allowedOrigins = Array.from(new Set([...configuredClientUrls, ...defaultProdOrigins, ...defaultDevOrigins]));
+
+const isDevLocalOrigin = (origin) => {
+  if (process.env.NODE_ENV === 'production') return false;
+  return /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
+};
+
+const isAllowedRenderOrigin = (origin) => /^https:\/\/powerpulseproo(?:-[a-z0-9]+)?\.onrender\.com$/.test(origin)
+  || /^https:\/\/powerpulsepro-api(?:-[a-z0-9]+)?\.onrender\.com$/.test(origin)
+  || /^https:\/\/powerpulseproo-api(?:-[a-z0-9]+)?\.onrender\.com$/.test(origin);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow non-browser clients and approved web origins.
+    if (!origin || allowedOrigins.includes(origin) || isDevLocalOrigin(origin) || isAllowedRenderOrigin(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true
+}));
+
+// Body parsing middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// MongoDB connection with retry logic
+const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/powerpulsepro';
+const connectWithRetry = async (retries = 5, backoffMs = 2000) => {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log('🚀 MongoDB connected successfully');
+
+    // Only seed default data in non-production (development/testing) environments
+    if (process.env.NODE_ENV !== 'production') {
+      try {
+        const adminCount = await Admin.countDocuments();
+        if (adminCount === 0) {
+          const defaultAdmin = new Admin({
+            adminId: 'ADM0001',
+            name: 'Super Admin',
+            email: process.env.DEFAULT_ADMIN_EMAIL || 'admin@powerpulsepro.local',
+            // Only allow default passwords in non-production
+            password: process.env.DEFAULT_ADMIN_PASSWORD || 'Admin@12345',
+            role: 'super-admin',
+            permissions: [
+              'read-consumers', 'write-consumers', 'delete-consumers',
+              'read-meters', 'write-meters',
+              'read-billing', 'write-billing',
+              'read-alerts', 'write-alerts',
+              'system-settings', 'user-management', 'reports-access'
+            ],
+            department: 'it',
+            status: 'active'
+          });
+          await defaultAdmin.save();
+          console.log('🛡️  Seeded default super admin (non-production only)');
+        }
+
+        // Optional seed events (only if none exist) unless disabled
+        if (process.env.SEED_EVENTS !== 'false') {
+          const eventCount = await Event.countDocuments();
+          if (eventCount === 0) {
+            await Event.insertMany([
+              { type: 'System', severity: 'Info', detail: 'System initialized successfully.', source: 'PPPRO-001', status: 'New', autoGenerated: true },
+              { type: 'Threshold', severity: 'Warning', detail: 'Voltage under limit (UV): 175V (< 180V).', source: 'PPPRO-001', status: 'New', autoGenerated: true, occurredAt: new Date(Date.now() - 5 * 60 * 1000) },
+              { type: 'Tamper', severity: 'Critical', detail: 'Cover opened detection triggered.', source: 'PPPRO-002', status: 'New', autoGenerated: true, occurredAt: new Date(Date.now() - 10 * 60 * 1000) }
+            ]);
+            console.log('⚡ Seeded sample events (non-production only)');
+          }
+        }
+      } catch (seedErr) {
+        console.error('Seeding error:', seedErr.message);
+      }
+    } else {
+      console.log('Seeding skipped in production');
+    }
+  } catch (err) {
+    console.error('❌ MongoDB connection error:', err.message || err);
+    if (retries > 0) {
+      console.log(`Retrying MongoDB connection in ${backoffMs}ms... (${retries} retries left)`);
+      setTimeout(() => connectWithRetry(retries - 1, Math.min(30000, backoffMs * 2)), backoffMs);
+    } else {
+      console.error('Failed to connect to MongoDB after multiple attempts');
+    }
+  }
+};
+
+connectWithRetry();
+
+// Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/consumer', consumerRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/meter', meterRoutes);
+app.use('/api/billing', billingRoutes);
+app.use('/api/alerts', alertRoutes);
+app.use('/api/events', eventRoutes);
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'PowerPulsePro API is running!',
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  if (process.env.NODE_ENV !== 'production') {
+    console.error('Error:', err.stack || err);
+  } else {
+    console.error('Error:', err.message || err);
+  }
+
+  res.status(500).json({
+    status: 'error',
+    message: process.env.NODE_ENV === 'production'
+      ? 'Something went wrong!'
+      : err.message,
+    // Do not expose stack traces in production
+  });
+});
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Route not found'
+  });
+});
+
+// Start server immediately so health checks and CORS can respond even if Mongo is slow.
+app.listen(PORT, () => {
+  console.log(`🌟 PowerPulsePro Server running on port ${PORT}`);
+  const hostPreview = process.env.CLIENT_URL || `http://localhost:${PORT}`;
+  console.log(`🔗 API Preview / Client URL: ${hostPreview}`);
+  console.log(`📊 Health Check: ${hostPreview.replace(/\/$/, '')}/api/health`);
+});
+
+module.exports = app;

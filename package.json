@@ -1,5 +1,10 @@
+{
+"name": "powerpulsepro-root",
+"version": "1.0.0",
+"private": true,
 "scripts": {
-"install-all": "npm --prefix backend install && npm --prefix client install",
+"install-all": "npm --prefix server install && npm --prefix client install",
 "build-all": "npm --prefix client run build",
-"start-server": "npm --prefix backend start"
+"start-server": "npm --prefix server start"
+}
 }

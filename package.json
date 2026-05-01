@@ -1,13 +1,5 @@
-{
-  "name": "powerpulsepro-root",
-  "private": true,
-  "scripts": {
-    "install-all": "npm --prefix server install && npm --prefix client install",
-    "build-all": "npm --prefix client run build",
-    "start-server": "npm --prefix server start",
-    "dev": "concurrently \"npm --prefix server run dev\" \"npm --prefix client run dev\""
-  },
-  "devDependencies": {
-    "concurrently": "^7.0.0"
-  }
+"scripts": {
+"install-all": "npm --prefix backend install && npm --prefix client install",
+"build-all": "npm --prefix client run build",
+"start-server": "npm --prefix backend start"
 }

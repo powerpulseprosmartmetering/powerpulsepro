@@ -1,0 +1,39 @@
+node_modules/
+/client/node_modules/
+/server/node_modules/
+
+# Build output
+dist/
+build/
+/client/dist/
+
+# Environment files
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Temporary files
+tmp*
+tmp_*
+*.tmp
+
+# Worktrees
+*.worktrees/
+PowerPulseProo.worktrees/
+
+# Misc
+coverage/
+.cache/
+/.parcel-cache/
